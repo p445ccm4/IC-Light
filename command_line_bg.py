@@ -1,6 +1,5 @@
 import os
 import math
-
 import cv2
 import numpy as np
 import torch
@@ -379,9 +378,20 @@ class BGSource(Enum):
     GREY = "Ambient"
 
 def preprocess(foreground, background, target_width, target_height):
+    global i
     # Reduce the size of the image by a scale factor
     original_height, original_width, original_channel = foreground.shape
-    scale_factor = max(target_width / original_width, target_height / original_height) / 3
+    scale_factor = max(target_width / original_width, target_height / original_height)
+    if i == 0:
+        scale_factor = max(target_width / original_width, target_height / original_height) / 3
+    elif i == 1:
+        scale_factor = max(target_width / original_width, target_height / original_height) / 4
+    elif i == 2:
+        scale_factor = max(target_width / original_width, target_height / original_height) / 1
+    elif i == 3:
+        scale_factor = max(target_width / original_width, target_height / original_height) / 4
+    elif i == 4:
+        scale_factor = max(target_width / original_width, target_height / original_height) / 2
     resized_width = int(original_width * scale_factor)
     resized_height = int(original_height * scale_factor)
     resized_foreground = cv2.resize(foreground, (resized_width, resized_height), interpolation=cv2.INTER_LANCZOS4)
@@ -392,11 +402,31 @@ def preprocess(foreground, background, target_width, target_height):
 
     # Calculate the position to paste the resized image in the middle-bottom
     paste_x = (target_width - resized_width) // 2
-    paste_y = target_height - int(resized_height * 1.1)
+    paste_y = target_height - resized_height
+    if i == 2:
+        paste_y = int(target_height * 0.7 - resized_height / 2)
+    elif i == 3:
+        paste_y = int(target_height * 0.7 - resized_height / 2)
+    elif i == 4:
+        paste_y = int(target_height * 0.7 - resized_height / 2)
 
     # Ensure the paste coordinates are within bounds
-    paste_x = max(0, paste_x)
-    paste_y = max(0, paste_y)
+    if paste_x < 0:
+        print("paste_x: ", paste_x)
+        resized_foreground = resized_foreground[:, -paste_x:, :]
+        paste_x = 0
+    if paste_y < 0:
+        print("paste_y: ", paste_y)
+        resized_foreground = resized_foreground[-paste_y:, :, :]
+        paste_y = 0
+    if paste_x + resized_width > target_width:
+        print(f"paste_x + resized_width: {paste_x + resized_width}, target_width: {target_width}")
+        resized_foreground = resized_foreground[:, :target_width - paste_x, :]
+        resized_width = target_width - paste_x
+    if paste_y + resized_height > target_height:
+        print(f"paste_y + resized_height: {paste_y + resized_height}, target_height: {target_height}")
+        resized_foreground = resized_foreground[:target_height - paste_y, :, :]
+        resized_height = target_height - paste_y
 
     # Ensure the images have an alpha channel
     if original_channel == 4:
@@ -430,27 +460,27 @@ def preprocess(foreground, background, target_width, target_height):
 # configs
 fg_dir = "inputs/foreground/with_alpha"
 bg_dir = "inputs/background"
-output_dir = "outputs"
+output_dir = "outputs/09102024"
 input_fg_paths = [os.path.join(fg_dir, image) for image in sorted(os.listdir(fg_dir))]
 # input_fg_paths = ["/home/michaelch/IC-Light/inputs/foreground/blue_sofa_chair.png"]
 input_bg_paths = [os.path.join(bg_dir, image) for image in sorted(os.listdir(bg_dir))]
 
 for i, input_fg_path in enumerate(input_fg_paths):
-    if i != 0:
-        continue
+    # if i != 4:
+    #     continue
     for j, input_bg_path in enumerate(input_bg_paths):
-        if j != 0:
-            continue
+        # if j != 0:
+        #     continue
         if os.path.isdir(input_bg_path) or os.path.isdir(input_fg_path):
             continue
-        prompt = "indoor, natural lighting, realistic"
+        prompt = os.path.basename(input_fg_paths[i]).split('.')[0].replace("_", " ") + ", indoor, natural lighting, realistic"
         bg_source = BGSource.UPLOAD.value
         num_samples = 1
         a_prompt = 'best quality'
         n_prompt = 'lowres, bad anatomy, bad hands, cropped, worst quality'
         seed = 12345
         steps = 20
-        cfg = 7.0
+        cfg = 12.0
         highres_scale = 1.0
         highres_denoise = 0.5
 
@@ -470,19 +500,19 @@ for i, input_fg_path in enumerate(input_fg_paths):
         # display and save results
         for img, mode in zip(results, ['result', 'cropped_fg', 'bg']):
             bgr = img[:, :, ::-1]
-            cv2.imshow("result", bgr)
-            cv2.waitKey(0)
+            # cv2.imshow("result", bgr)
+            # cv2.waitKey(0)
             cv2.destroyAllWindows()
             save_path = os.path.join(output_dir, f"{i}_{j}_{mode}.png")
-            # cv2.imwrite(save_path, bgr)
+            cv2.imwrite(save_path, bgr)
 
-    # # normal bg
-    # results = process_normal(*ips)
-    # # display and save results
-    # for img, mode in zip(results[5:], ['left', 'right', 'bottom', 'top']):
-    #     bgr = img[:, :, ::-1]
-    #     # cv2.imshow("result", bgr)
-    #     # cv2.waitKey(0)
-    #     cv2.destroyAllWindows()
-    #     save_path = os.path.join(output_dir, f"{i}_{mode}.png")
-    #     cv2.imwrite(save_path, bgr)
+    # normal bg
+    results = process_normal(*ips)
+    # display and save results
+    for img, mode in zip(results[5:], ['left', 'right', 'bottom', 'top']):
+        bgr = img[:, :, ::-1]
+        # cv2.imshow("result", bgr)
+        # cv2.waitKey(0)
+        cv2.destroyAllWindows()
+        save_path = os.path.join(output_dir, f"{i}_{mode}.png")
+        cv2.imwrite(save_path, bgr)
