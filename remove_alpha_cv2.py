@@ -30,7 +30,7 @@ def move_shadow_to_background(foreground, background):
     composite_rgb = (1 - alpha_channel_expanded) * bg_rgb + alpha_channel_expanded * fg_rgb
     background[mask_shadow] = composite_rgb[mask_shadow]
 
-    return adjusted_foreground, background
+    return adjusted_foreground[:, :, :3], background
 
 # Example usage
 foreground_paths = sorted(os.listdir("inputs/foreground/with_alpha"))  # Replace with your input image path

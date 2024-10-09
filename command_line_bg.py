@@ -6,7 +6,6 @@ import numpy as np
 import torch
 import safetensors.torch as sf
 
-from PIL import Image
 from diffusers import StableDiffusionPipeline, StableDiffusionImg2ImgPipeline
 from diffusers import AutoencoderKL, UNet2DConditionModel, DDIMScheduler, EulerAncestralDiscreteScheduler, DPMSolverMultistepScheduler
 from diffusers.models.attention_processor import AttnProcessor2_0
@@ -195,81 +194,22 @@ def numpy2pytorch(imgs):
 
 
 def resize_and_center_crop(image, target_width, target_height):
-    #TODO: convert to openCV
-    pil_image = Image.fromarray(image)
-    original_width, original_height = pil_image.size
+    original_height, original_width = image.shape[:2]
     scale_factor = max(target_width / original_width, target_height / original_height)
     resized_width = int(round(original_width * scale_factor))
     resized_height = int(round(original_height * scale_factor))
-    resized_image = pil_image.resize((resized_width, resized_height), Image.LANCZOS)
-    left = (resized_width - target_width) / 2
-    top = (resized_height - target_height) / 2
-    right = (resized_width + target_width) / 2
-    bottom = (resized_height + target_height) / 2
-    cropped_image = resized_image.crop((left, top, right, bottom))
-    return np.array(cropped_image)
+    resized_image = cv2.resize(image, (resized_width, resized_height), interpolation=cv2.INTER_LANCZOS4)
+    left = (resized_width - target_width) // 2
+    top = (resized_height - target_height) // 2
+    right = left + target_width
+    bottom = top + target_height
+    cropped_image = resized_image[top:bottom, left:right]
+    return cropped_image
 
 
 def resize_without_crop(image, target_width, target_height):
-    # pil_image = Image.fromarray(image)
-    # resized_image = pil_image.resize((target_width, target_height), Image.LANCZOS)
-    # return np.array(resized_image)
     return cv2.resize(image, (target_width, target_height))
 
-
-def reduce_and_paste(image, target_width, target_height):
-    #TODO: convert to openCV
-
-    # Convert the input image to a PIL Image
-    pil_image = Image.fromarray(image)
-
-    # Reduce the size of the image by half
-    original_width, original_height = pil_image.size
-
-    scale_factor = max(target_width / original_width, target_height / original_height) / 3
-
-    resized_image = pil_image.resize((int(original_width * scale_factor), int(original_height * scale_factor)), Image.LANCZOS)
-
-    # Create a transparent image with the same size as the original image
-    new_image = Image.new("RGB", (target_width, target_height), (127, 127, 127))
-
-    # Calculate the position to paste the resized image in the middle-bottom
-    paste_x = (target_width - resized_image.width) // 2
-    paste_y = target_height - int(resized_image.height*1.1)
-
-    # Paste the resized image onto the transparent image
-    new_image.paste(resized_image, (paste_x, paste_y))
-
-    return np.array(new_image)
-
-def move_shadow_to_background(foreground, background):
-    # Ensure the images have an alpha channel
-    if foreground.shape[2] != 4:
-        raise ValueError("Foreground image does not have an alpha channel")
-
-    # Create a new image for the adjusted foreground
-    adjusted_foreground = np.full(foreground.shape, (127, 127, 127, 255), dtype=np.uint8)
-
-    # Separate the alpha channel
-    alpha_channel = foreground[:, :, 3] / 255.0
-
-    # Fully opaque pixels
-    mask_opaque = alpha_channel == 1
-
-    # Shadow pixels
-    mask_shadow = (alpha_channel > 0) & (alpha_channel < 1)
-
-    # Keep original RGB values for fully opaque pixels
-    adjusted_foreground[mask_opaque] = foreground[mask_opaque]
-
-    # Composite shadow pixels
-    bg_rgb = background[:, :, :3]
-    fg_rgb = foreground[:, :, :3]
-    alpha_channel_expanded = alpha_channel[:, :, np.newaxis]
-    composite_rgb = (1 - alpha_channel_expanded) * bg_rgb + alpha_channel_expanded * fg_rgb
-    background[mask_shadow] = composite_rgb[mask_shadow]
-
-    return adjusted_foreground, background
 
 @torch.inference_mode()
 def run_rmbg(img, sigma=0.0):
@@ -317,8 +257,9 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
 
     rng = torch.Generator(device=device).manual_seed(seed)
 
-    fg = reduce_and_paste(input_fg, image_width, image_height)
-    bg = resize_and_center_crop(input_bg, image_width, image_height)
+    # fg = reduce_and_paste(input_fg, image_width, image_height)
+    # bg = resize_and_center_crop(input_bg, image_width, image_height)
+    fg, bg = input_fg, input_bg
     concat_conds = numpy2pytorch([fg, bg]).to(device=vae.device, dtype=vae.dtype)
     concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
     concat_conds = torch.cat([c[None, ...] for c in concat_conds], dim=1)
@@ -349,13 +290,6 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
     pixels = numpy2pytorch(pixels).to(device=vae.device, dtype=vae.dtype)
     latents = vae.encode(pixels).latent_dist.mode() * vae.config.scaling_factor
     latents = latents.to(device=unet.device, dtype=unet.dtype)
-
-    image_height, image_width = latents.shape[2] * 8, latents.shape[3] * 8
-    fg = reduce_and_paste(input_fg, image_width, image_height)
-    bg = resize_and_center_crop(input_bg, image_width, image_height)
-    concat_conds = numpy2pytorch([fg, bg]).to(device=vae.device, dtype=vae.dtype)
-    concat_conds = vae.encode(concat_conds).latent_dist.mode() * vae.config.scaling_factor
-    concat_conds = torch.cat([c[None, ...] for c in concat_conds], dim=1)
 
     latents = i2i_pipe(
         image=latents,
@@ -444,8 +378,57 @@ class BGSource(Enum):
     BOTTOM = "Bottom Light"
     GREY = "Ambient"
 
+def preprocess(foreground, background, target_width, target_height):
+    # Reduce the size of the image by a scale factor
+    original_height, original_width, original_channel = foreground.shape
+    scale_factor = max(target_width / original_width, target_height / original_height) / 3
+    resized_width = int(original_width * scale_factor)
+    resized_height = int(original_height * scale_factor)
+    resized_foreground = cv2.resize(foreground, (resized_width, resized_height), interpolation=cv2.INTER_LANCZOS4)
+    resized_background = resize_and_center_crop(background, target_width, target_height)
+
+    # Create a new image with the target size and a gray background
+    new_foreground = np.full((target_height, target_width, 3), (127, 127, 127), dtype=np.uint8)
+
+    # Calculate the position to paste the resized image in the middle-bottom
+    paste_x = (target_width - resized_width) // 2
+    paste_y = target_height - int(resized_height * 1.1)
+
+    # Ensure the paste coordinates are within bounds
+    paste_x = max(0, paste_x)
+    paste_y = max(0, paste_y)
+
+    # Ensure the images have an alpha channel
+    if original_channel == 4:
+        # Separate the alpha channel
+        alpha_channel = resized_foreground[:, :, 3] / 255.0
+
+        # Fully opaque pixels
+        mask_opaque = alpha_channel == 1
+
+        # Shadow pixels
+        mask_shadow = (alpha_channel > 0) & (alpha_channel < 1)
+
+        # Keep original RGB values for fully opaque pixels
+        new_foreground[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width][mask_opaque] = resized_foreground[:, :, :3][mask_opaque]
+
+        # Composite shadow pixels
+        bg_rgb = resized_background[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width, :3]
+        fg_rgb = resized_foreground[:, :, :3]
+        alpha_channel_expanded = alpha_channel[:, :, np.newaxis]
+        composite_rgb = (1 - alpha_channel_expanded) * bg_rgb + alpha_channel_expanded * fg_rgb
+        resized_background[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width][mask_shadow] = composite_rgb[mask_shadow]
+
+    else:
+        # Paste the resized image onto the new image
+        new_foreground[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width] = resized_foreground
+
+    new_foreground = cv2.cvtColor(new_foreground, cv2.COLOR_BGR2RGB)
+    resized_background = cv2.cvtColor(resized_background, cv2.COLOR_BGR2RGB)
+    return new_foreground, resized_background
+
 # configs
-fg_dir = "inputs/foreground"
+fg_dir = "inputs/foreground/with_alpha"
 bg_dir = "inputs/background"
 output_dir = "outputs"
 input_fg_paths = [os.path.join(fg_dir, image) for image in sorted(os.listdir(fg_dir))]
@@ -456,6 +439,8 @@ for i, input_fg_path in enumerate(input_fg_paths):
     if i != 0:
         continue
     for j, input_bg_path in enumerate(input_bg_paths):
+        if j != 0:
+            continue
         if os.path.isdir(input_bg_path) or os.path.isdir(input_fg_path):
             continue
         prompt = "indoor, natural lighting, realistic"
@@ -470,14 +455,13 @@ for i, input_fg_path in enumerate(input_fg_paths):
         highres_denoise = 0.5
 
         # inference
-        input_fg = cv2.cvtColor(cv2.imread(input_fg_path), cv2.COLOR_BGR2RGB)
-        input_bg = cv2.cvtColor(cv2.imread(input_bg_path), cv2.COLOR_BGR2RGB)
+        input_bg = cv2.imread(input_bg_path)
+        input_fg = cv2.imread(input_fg_path, cv2.IMREAD_UNCHANGED)
+        image_height, image_width, _ = input_bg.shape
+        image_width = int(image_width // 64 * 64)
+        image_height = int(image_height // 64 * 64)
+        input_fg, input_bg = preprocess(input_fg, input_bg, image_width, image_height)
 
-        if "inputs/background/empty-room-interior-3d-rendering-260nw-1160216266.webp" in input_bg_path:
-            input_bg = input_bg[:-50, :, :]
-
-        image_width, image_height, _ = input_bg.shape
-        image_width, image_height = int(image_height // 8 * 8), int(image_width // 8 * 8)
         ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg,
                highres_scale, highres_denoise, bg_source]
 
@@ -486,8 +470,8 @@ for i, input_fg_path in enumerate(input_fg_paths):
         # display and save results
         for img, mode in zip(results, ['result', 'cropped_fg', 'bg']):
             bgr = img[:, :, ::-1]
-            # cv2.imshow("result", bgr)
-            # cv2.waitKey(0)
+            cv2.imshow("result", bgr)
+            cv2.waitKey(0)
             cv2.destroyAllWindows()
             save_path = os.path.join(output_dir, f"{i}_{j}_{mode}.png")
             # cv2.imwrite(save_path, bgr)
