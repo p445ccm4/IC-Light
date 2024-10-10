@@ -38,10 +38,10 @@ def convert_rgba_to_rgb(foreground_path, background_path):
 
 
 # Example usage
-foreground_paths = sorted(os.listdir("inputs/foreground/with_alpha"))  # Replace with your input image path
+foreground_paths = sorted(os.listdir("../inputs/foreground/with_alpha"))  # Replace with your input image path
 for foreground_path in foreground_paths[3:4]:
     background_path = os.path.join("/home/michaelch/IC-Light/inputs/foreground/wooden_chair_noalpha.jpg")  # Replace with your desired output path
-    foreground_path = os.path.join("inputs/foreground/with_alpha", foreground_path)
+    foreground_path = os.path.join("../inputs/foreground/with_alpha", foreground_path)
 
     adjusted_foreground, background = convert_rgba_to_rgb(foreground_path, background_path)
 

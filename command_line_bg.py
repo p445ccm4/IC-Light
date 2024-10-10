@@ -313,7 +313,7 @@ def process(input_fg, input_bg, prompt, image_width, image_height, num_samples, 
 
 @torch.inference_mode()
 def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
-    input_fg, matting = run_rmbg(input_fg)
+    _, matting = run_rmbg(input_fg)
     results, extra_images = process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source)
     results = [(x * 255.0).clip(0, 255).astype(np.uint8) for x in results]
     return results + extra_images
@@ -321,7 +321,7 @@ def process_relight(input_fg, input_bg, prompt, image_width, image_height, num_s
 
 @torch.inference_mode()
 def process_normal(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
-    input_fg, matting = run_rmbg(input_fg, sigma=16)
+    _, matting = run_rmbg(input_fg, sigma=16)
 
     print('left ...')
     left = process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value)[0][0]
@@ -383,9 +383,9 @@ def preprocess(foreground, background, target_width, target_height):
     original_height, original_width, original_channel = foreground.shape
     scale_factor = max(target_width / original_width, target_height / original_height)
     if i == 0:
-        scale_factor = max(target_width / original_width, target_height / original_height) / 3
-    elif i == 1:
         scale_factor = max(target_width / original_width, target_height / original_height) / 4
+    elif i == 1:
+        scale_factor = max(target_width / original_width, target_height / original_height) / 3
     elif i == 2:
         scale_factor = max(target_width / original_width, target_height / original_height) / 1
     elif i == 3:
@@ -399,16 +399,11 @@ def preprocess(foreground, background, target_width, target_height):
 
     # Create a new image with the target size and a gray background
     new_foreground = np.full((target_height, target_width, 3), (127, 127, 127), dtype=np.uint8)
+    new_shadow = np.zeros((target_height, target_width, 1), dtype=np.uint8)
 
     # Calculate the position to paste the resized image in the middle-bottom
     paste_x = (target_width - resized_width) // 2
-    paste_y = target_height - resized_height
-    if i == 2:
-        paste_y = int(target_height * 0.7 - resized_height / 2)
-    elif i == 3:
-        paste_y = int(target_height * 0.7 - resized_height / 2)
-    elif i == 4:
-        paste_y = int(target_height * 0.7 - resized_height / 2)
+    paste_y = int(target_height * 0.7 - resized_height / 2)
 
     # Ensure the paste coordinates are within bounds
     if paste_x < 0:
@@ -437,17 +432,19 @@ def preprocess(foreground, background, target_width, target_height):
         mask_opaque = alpha_channel == 1
 
         # Shadow pixels
-        mask_shadow = (alpha_channel > 0) & (alpha_channel < 1)
+        mask_shadow = (alpha_channel > 0) & (alpha_channel < 0.3)
 
         # Keep original RGB values for fully opaque pixels
         new_foreground[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width][mask_opaque] = resized_foreground[:, :, :3][mask_opaque]
 
-        # Composite shadow pixels
-        bg_rgb = resized_background[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width, :3]
-        fg_rgb = resized_foreground[:, :, :3]
-        alpha_channel_expanded = alpha_channel[:, :, np.newaxis]
-        composite_rgb = (1 - alpha_channel_expanded) * bg_rgb + alpha_channel_expanded * fg_rgb
-        resized_background[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width][mask_shadow] = composite_rgb[mask_shadow]
+        # # Composite shadow pixels
+        # bg_rgb = resized_background[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width, :3]
+        # fg_rgb = resized_foreground[:, :, :3]
+        # alpha_channel_expanded = alpha_channel[:, :, np.newaxis]
+        # composite_rgb = (1 - alpha_channel_expanded) * bg_rgb + alpha_channel_expanded * fg_rgb
+        # resized_background[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width][mask_shadow] = composite_rgb[mask_shadow]
+        alpha_channel_expanded = alpha_channel[:, :, np.newaxis] * 255
+        new_shadow[paste_y:paste_y + resized_height, paste_x:paste_x + resized_width][mask_shadow] = alpha_channel_expanded[mask_shadow]
 
     else:
         # Paste the resized image onto the new image
@@ -455,25 +452,24 @@ def preprocess(foreground, background, target_width, target_height):
 
     new_foreground = cv2.cvtColor(new_foreground, cv2.COLOR_BGR2RGB)
     resized_background = cv2.cvtColor(resized_background, cv2.COLOR_BGR2RGB)
-    return new_foreground, resized_background
+    return new_foreground, resized_background, new_shadow
 
 # configs
 fg_dir = "inputs/foreground/with_alpha"
 bg_dir = "inputs/background"
-output_dir = "outputs/09102024"
+output_dir = "outputs/10102024/separated"
 input_fg_paths = [os.path.join(fg_dir, image) for image in sorted(os.listdir(fg_dir))]
-# input_fg_paths = ["/home/michaelch/IC-Light/inputs/foreground/blue_sofa_chair.png"]
 input_bg_paths = [os.path.join(bg_dir, image) for image in sorted(os.listdir(bg_dir))]
 
 for i, input_fg_path in enumerate(input_fg_paths):
-    # if i != 4:
-    #     continue
+    if i < 3:
+        continue
     for j, input_bg_path in enumerate(input_bg_paths):
         # if j != 0:
         #     continue
         if os.path.isdir(input_bg_path) or os.path.isdir(input_fg_path):
             continue
-        prompt = os.path.basename(input_fg_paths[i]).split('.')[0].replace("_", " ") + ", indoor, natural lighting, realistic"
+        prompt = os.path.basename(input_fg_paths[i]).split('.')[0].replace("_", " ") + "," + os.path.basename(input_bg_paths[i]).split('.')[0].replace("_", " ")
         bg_source = BGSource.UPLOAD.value
         num_samples = 1
         a_prompt = 'best quality'
@@ -490,19 +486,18 @@ for i, input_fg_path in enumerate(input_fg_paths):
         image_height, image_width, _ = input_bg.shape
         image_width = int(image_width // 64 * 64)
         image_height = int(image_height // 64 * 64)
-        input_fg, input_bg = preprocess(input_fg, input_bg, image_width, image_height)
+        input_fg, input_bg, input_shadow = preprocess(input_fg, input_bg, image_width, image_height)
 
         ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg,
                highres_scale, highres_denoise, bg_source]
 
         # upload bg
-        results = process_relight(*ips)
+        results = process_relight(*ips) + [input_shadow]
         # display and save results
-        for img, mode in zip(results, ['result', 'cropped_fg', 'bg']):
+        for img, mode in zip(results, ['result', 'cropped_fg', 'bg', 'shadow']):
             bgr = img[:, :, ::-1]
-            # cv2.imshow("result", bgr)
+            # cv2.imshow(mode, bgr)
             # cv2.waitKey(0)
-            cv2.destroyAllWindows()
             save_path = os.path.join(output_dir, f"{i}_{j}_{mode}.png")
             cv2.imwrite(save_path, bgr)
 
@@ -513,6 +508,7 @@ for i, input_fg_path in enumerate(input_fg_paths):
         bgr = img[:, :, ::-1]
         # cv2.imshow("result", bgr)
         # cv2.waitKey(0)
-        cv2.destroyAllWindows()
         save_path = os.path.join(output_dir, f"{i}_{mode}.png")
         cv2.imwrite(save_path, bgr)
+
+cv2.destroyAllWindows()
